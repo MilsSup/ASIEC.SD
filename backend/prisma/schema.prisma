@@ -1,0 +1,263 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+  url      = "file:./dev.db"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ================= РОЛИ И СТАТУСЫ =================
+
+enum Role {
+  INITIATOR
+  EXECUTOR
+  MANAGER
+}
+
+enum TicketStatus {
+  NEW
+  IN_PROGRESS
+  WAITING_FOR_PURCHASE
+  COMPLETED
+  CANCELED
+}
+
+// Срочность заявки
+enum Priority {
+  LOW
+  NORMAL
+  HIGH
+}
+
+// ================= СПРАВОЧНИКИ =================
+
+// 1. Справочник должностей
+model Position {
+  id    Int    @id @default(autoincrement())
+  name  String @unique
+  users User[]
+
+  @@map("positions")
+}
+
+// 2. Подразделения / Кафедры
+model Department {
+  id    Int    @id @default(autoincrement())
+  name  String @unique
+  users User[] 
+
+  @@map("departments")
+}
+
+// 3. Категории инцидентов
+model Category {
+  id       Int      @id @default(autoincrement())
+  name     String   @unique 
+  slaHours Int      @default(24) // Время_Решения
+  tickets  Ticket[]
+
+  @@map("categories")
+}
+
+// 4. Оборудование
+model Equipment {
+  id              Int      @id @default(autoincrement())
+  inventoryNumber String   @unique // Инвентарный_номер
+  name            String   
+  room            String   // Аудитория
+
+  tickets         Ticket[] 
+
+  @@map("equipment")
+}
+
+// 5. Единицы измерения
+model Unit {
+  id        Int            @id @default(autoincrement())
+  shortName String         @unique // Краткое_наименование (например, "шт", "кг")
+  fullName  String         // Полное_наименование (например, "Штука")
+  products  Nomenclature[]
+
+  @@map("units")
+}
+
+// ================= ОСНОВНЫЕ СУЩНОСТИ =================
+
+// 6. Пользователи системы
+model User {
+  id           Int      @id @default(autoincrement())
+  login        String   @unique
+  passwordHash String
+  role         Role     @default(INITIATOR)
+  fullName     String   // ФИО
+  
+  telegramChatId String?  @unique 
+  linkCode       String?  @unique // Одноразовый код для привязки
+
+  departmentId Int?
+  department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  positionId   Int?
+  position     Position?   @relation(fields: [positionId], references: [id], onDelete: SetNull)
+
+  // Корпус, за которым закреплён сотрудник (1 или 2). Если не задан - видит заявки из обоих корпусов
+  building     Int?
+
+  createdTickets  Ticket[]        @relation("InitiatorTickets")
+  executedTickets Ticket[]        @relation("ExecutorTickets")
+  historyLogs     TicketHistory[]
+  stockWriteOffs  StockWriteOff[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
+// 7. Заявки (инциденты)
+model Ticket {
+  id          Int          @id @default(autoincrement())
+  description String       // Описание
+  room        String       // Аудитория
+  building    Int          @default(1) // Корпус (1 или 2)
+  status      TicketStatus @default(NEW)
+  priority    Priority     @default(NORMAL) // Срочность
+  
+  categoryId  Int
+  category    Category     @relation(fields: [categoryId], references: [id])
+
+  equipmentId Int?
+  equipment   Equipment?   @relation(fields: [equipmentId], references: [id], onDelete: SetNull)
+
+  initiatorId Int?
+  initiator   User?        @relation("InitiatorTickets", fields: [initiatorId], references: [id], onDelete: SetNull)
+  
+  executorId  Int?
+  executor    User?        @relation("ExecutorTickets", fields: [executorId], references: [id], onDelete: SetNull)
+
+  parts       TicketPart[]
+  history     TicketHistory[]
+  writeOffs   StockWriteOff[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("tickets")
+}
+
+// 8. История изменений заявок (аудит действий)
+model TicketHistory {
+  id          Int          @id @default(autoincrement())
+  
+  ticketId    Int
+  ticket      Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  
+  changedById Int          // Автор_изменения_id
+  changedBy   User         @relation(fields: [changedById], references: [id])
+
+  oldStatus   TicketStatus? // Старый_статус
+  newStatus   TicketStatus  // Новый_статус
+  comment     String?       // Комментарий
+
+  createdAt   DateTime     @default(now()) // Дата_изменения
+
+  @@map("ticket_history")
+}
+
+// ================= СКЛАДСКОЙ УЧЕТ =================
+
+// 9. Справочник складов
+model Warehouse {
+  id        Int         @id @default(autoincrement())
+  name      String      // Наименование (например: "Склад корпуса 1")
+
+  // Корпус, к которому относится склад (1 или 2)
+  building  Int?
+
+  inventory Inventory[]
+  writeOffs StockWriteOff[]
+
+  @@map("warehouses")
+}
+
+// 10. Складские остатки
+model Inventory {
+  id             Int          @id @default(autoincrement())
+  quantity       Int          @default(0) // Количество_в_наличии
+  minQuantity    Int          @default(0) // Неснижаемый остаток (лимит)
+
+  warehouseId    Int          // Склад_id
+  nomenclatureId Int          // Номенклатура_id
+
+  warehouse      Warehouse    @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  nomenclature   Nomenclature @relation(fields: [nomenclatureId], references: [id], onDelete: Cascade)
+
+  @@unique([warehouseId, nomenclatureId]) 
+  @@map("inventories")
+}
+
+// 11. Справочник Номенклатуры
+model Nomenclature {
+  id          Int          @id @default(autoincrement())
+  name        String       // Наименование
+  article     String?      // Артикул
+  price       Float        @default(0) // Текущая_Цена в каталоге
+  
+  unitId      Int          // Единица_измерения_id
+  unit        Unit         @relation(fields: [unitId], references: [id])
+  
+  inventory   Inventory[]
+  ticketParts TicketPart[]
+  writeOffs   StockWriteOff[]
+
+  @@map("nomenclatures")
+}
+
+// 12. Смета / Списание
+model TicketPart {
+  id               Int          @id @default(autoincrement())
+  ticketId         Int          // Заявка_id
+  ticket           Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  
+  nomenclatureId   Int          // Номенклатура_id
+  nomenclature     Nomenclature @relation(fields: [nomenclatureId], references: [id], onDelete: Cascade)
+  
+  requiredQuantity Int          @default(1) // Требуемое_количество
+  price            Float        @default(0) // Цена_за_единицу (фиксируется при добавлении)
+  isApproved       Boolean      @default(false) // Одобрено
+
+  fulfilledFromStock Boolean    @default(false)
+
+  @@unique([ticketId, nomenclatureId])
+  @@map("ticket_parts")
+}
+
+// 13. Списания со склада (фиксация выдачи деталей по заявкам)
+model StockWriteOff {
+  id             Int          @id @default(autoincrement())
+
+  ticketId       Int          // Заявка_id
+  ticket         Ticket       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  nomenclatureId Int          // Номенклатура_id
+  nomenclature   Nomenclature @relation(fields: [nomenclatureId], references: [id], onDelete: Cascade)
+
+  warehouseId    Int          // Склад_id
+  warehouse      Warehouse    @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  quantity       Int          // Списанное_количество
+  price          Float        @default(0) // Цена_за_единицу на момент списания
+
+  writtenOffById Int          // Кто списал
+  writtenOffBy   User         @relation(fields: [writtenOffById], references: [id])
+
+  createdAt      DateTime     @default(now())
+
+  @@map("stock_write_offs")
+}

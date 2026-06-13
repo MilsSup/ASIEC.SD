@@ -1,0 +1,46 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: file:/app/data/dev.db
+      CORS_ORIGIN: http://localhost:5173
+      PORT: "3000"
+    ports:
+      - "3000:3000"
+    volumes:
+      - db_data:/app/data
+    command: ["api"]
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: file:/app/data/dev.db
+    volumes:
+      - db_data:/app/data
+    command: ["bot"]
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: http://localhost:3000
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  db_data:

@@ -1,0 +1,17 @@
+node_modules
+dist
+
+# Секреты и переменные окружения (в репозитории — только .env.example)
+.env
+.env.*
+!.env.example
+
+# Локальная база SQLite
+prisma/*.db
+prisma/*.db-journal
+
+# Экспортированная OpenAPI-спецификация (генерируется скриптом)
+openapi.json
+
+# Логи
+*.log
