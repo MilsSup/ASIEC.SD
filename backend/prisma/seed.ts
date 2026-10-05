@@ -18,25 +18,30 @@ async function main() {
   await prisma.position.deleteMany();
 
   console.log('Справочники...');
-  const [posEngineer, posLaborant, posTeacher, posHead] = await Promise.all([
-    prisma.position.create({ data: { name: 'Инженер' } }),
-    prisma.position.create({ data: { name: 'Лаборант' } }),
+  // Должности исполнителей ИТ-отдела соответствуют специализациям из positionCategoryMap
+  const [posTech, posSysadmin, pos1C, posTeacher, posLaborant, posHead] = await Promise.all([
+    prisma.position.create({ data: { name: 'Техник' } }),
+    prisma.position.create({ data: { name: 'Системный администратор' } }),
+    prisma.position.create({ data: { name: 'Специалист 1С' } }),
     prisma.position.create({ data: { name: 'Преподаватель' } }),
-    prisma.position.create({ data: { name: 'Заведующий кафедрой' } }),
+    prisma.position.create({ data: { name: 'Лаборант' } }),
+    prisma.position.create({ data: { name: 'Руководитель отдела' } }),
   ]);
 
-  const [deptIVT, deptPhysics, deptAHO] = await Promise.all([
+  const [deptIVT, deptPhysics, deptIT] = await Promise.all([
     prisma.department.create({ data: { name: 'Кафедра информатики и ВТ' } }),
     prisma.department.create({ data: { name: 'Кафедра физики' } }),
-    prisma.department.create({ data: { name: 'Административно-хозяйственная часть' } }),
+    prisma.department.create({ data: { name: 'Отдел информационных технологий' } }),
   ]);
 
-  const [catComputers, catElectric, catPlumbing, catFurniture, catNetwork] = await Promise.all([
+  // Категории ИТ-поддержки. SLA в часах. «Другое» — для обращений вне специализаций.
+  const [catComputers, catNetwork, catOffice, cat1C, catAccounts, catOther] = await Promise.all([
     prisma.category.create({ data: { name: 'Компьютерная техника', slaHours: 24 } }),
-    prisma.category.create({ data: { name: 'Электрика', slaHours: 8 } }),
-    prisma.category.create({ data: { name: 'Сантехника', slaHours: 12 } }),
-    prisma.category.create({ data: { name: 'Мебель', slaHours: 72 } }),
     prisma.category.create({ data: { name: 'Сеть и интернет', slaHours: 4 } }),
+    prisma.category.create({ data: { name: 'Оргтехника', slaHours: 24 } }),
+    prisma.category.create({ data: { name: 'Помощь с 1С', slaHours: 8 } }),
+    prisma.category.create({ data: { name: 'Учётные записи и доступ', slaHours: 4 } }),
+    prisma.category.create({ data: { name: 'Другое', slaHours: 24 } }),
   ]);
 
   const [eqPc101, eqPc205, eqProjector310, eqPrinterDekanat] = await Promise.all([
@@ -61,7 +66,7 @@ async function main() {
       passwordHash: password,
       role: 'MANAGER',
       fullName: 'Иванова Анна Сергеевна',
-      departmentId: deptAHO.id,
+      departmentId: deptIT.id,
       positionId: posHead.id,
       building: null,
     },
@@ -73,8 +78,8 @@ async function main() {
       passwordHash: password,
       role: 'EXECUTOR',
       fullName: 'Петров Сергей Викторович',
-      departmentId: deptAHO.id,
-      positionId: posEngineer.id,
+      departmentId: deptIT.id,
+      positionId: posTech.id,
       building: 1,
     },
   });
@@ -85,11 +90,25 @@ async function main() {
       passwordHash: password,
       role: 'EXECUTOR',
       fullName: 'Сидоров Алексей Павлович',
-      departmentId: deptAHO.id,
-      positionId: posEngineer.id,
+      departmentId: deptIT.id,
+      positionId: posSysadmin.id,
       building: 2,
     },
   });
+
+  // Специалист 1С обслуживает оба корпуса (building: null)
+  const executor3 = await prisma.user.create({
+    data: {
+      login: 'executor3',
+      passwordHash: password,
+      role: 'EXECUTOR',
+      fullName: 'Волкова Ольга Дмитриевна',
+      departmentId: deptIT.id,
+      positionId: pos1C.id,
+      building: null,
+    },
+  });
+  void executor3;
 
   const initiator1 = await prisma.user.create({
     data: {
@@ -246,7 +265,7 @@ async function main() {
       building: 1,
       status: 'COMPLETED',
       priority: 'LOW',
-      categoryId: catComputers.id,
+      categoryId: catOffice.id,
       equipmentId: eqPrinterDekanat.id,
       initiatorId: manager.id,
       executorId: executor1.id,
@@ -287,28 +306,29 @@ async function main() {
   // 5. Отменённая заявка
   const ticket5 = await prisma.ticket.create({
     data: {
-      description: 'Течёт кран в лаборантской',
+      description: 'Прошу установить стороннюю программу на рабочий компьютер',
       room: '102',
       building: 1,
       status: 'CANCELED',
       priority: 'NORMAL',
-      categoryId: catPlumbing.id,
+      categoryId: catOther.id,
       initiatorId: initiator2.id,
     },
   });
   await prisma.ticketHistory.createMany({
     data: [
       { ticketId: ticket5.id, changedById: initiator2.id, oldStatus: null, newStatus: 'NEW', comment: 'Заявка создана' },
-      { ticketId: ticket5.id, changedById: manager.id, oldStatus: 'NEW', newStatus: 'CANCELED', comment: 'Дубликат заявки №1' },
+      { ticketId: ticket5.id, changedById: manager.id, oldStatus: 'NEW', newStatus: 'CANCELED', comment: 'Отклонено: установка ПО не согласована с ИТ-отделом' },
     ],
   });
 
   console.log('Готово!');
   console.log('');
   console.log('Тестовые пользователи (пароль для всех: password123):');
-  console.log('  manager     - роль MANAGER');
-  console.log('  executor1   - роль EXECUTOR (корпус 1)');
-  console.log('  executor2   - роль EXECUTOR (корпус 2)');
+  console.log('  manager     - роль MANAGER (Руководитель отдела)');
+  console.log('  executor1   - роль EXECUTOR (Техник, корпус 1)');
+  console.log('  executor2   - роль EXECUTOR (Системный администратор, корпус 2)');
+  console.log('  executor3   - роль EXECUTOR (Специалист 1С, оба корпуса)');
   console.log('  initiator1  - роль INITIATOR (корпус 1)');
   console.log('  initiator2  - роль INITIATOR (корпус 2)');
 }

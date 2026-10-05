@@ -4,7 +4,7 @@ import { useGetApiManagerWarehouse, getGetApiManagerWarehouseQueryKey } from '..
 import { receiveGoods } from '../../api/manager';
 import { ReceiveModal } from '../../components/ReceiveModal';
 import { AddStockModal } from '../../components/AddStockModal';
-import { WAREHOUSES, getStockStatus, Skeleton, ReportError } from './helpers';
+import { getStockStatus, Skeleton, ReportError } from './helpers';
 import type { InventoryItem } from './types';
 
 export const WarehouseTab = () => {
@@ -26,6 +26,11 @@ export const WarehouseTab = () => {
     await receiveGoods(inventoryId, qty);
     invalidate();
   };
+
+  // Список складов выводим из данных инвентаря — реальные id из БД
+  const warehouseOptions = Array.from(
+    new Map(warehouse.map(item => [item.warehouse.id, item.warehouse])).values()
+  ).sort((a, b) => a.id - b.id);
 
   const filteredWarehouse = warehouse.filter(item => {
     const matchesSearch = search.trim()
@@ -75,7 +80,7 @@ export const WarehouseTab = () => {
           className="bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
         >
           <option value="all">Все корпуса</option>
-          {WAREHOUSES.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+          {warehouseOptions.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
         </select>
       </div>
 

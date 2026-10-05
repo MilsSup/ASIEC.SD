@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useGetApiManagerReview, getGetApiManagerReviewQueryKey } from '../../generated/endpoints/default/default';
-import { approveTicketParts, rejectPurchase, updateTicketPartPrice } from '../../api/manager';
+import { approveTicketParts, rejectPurchase, updateTicketPartPrice, updateTicketPartQuantity, deleteTicketPart, addTicketPart } from '../../api/manager';
+import { NomenclaturePicker } from '../../components/NomenclaturePicker';
 import { PriorityBadge, normalizePriority } from '../../components/PriorityBadge';
 import { Skeleton, ReportError } from './helpers';
 import type { ReviewTicket } from './types';
@@ -15,10 +16,14 @@ export const ReviewTab = () => {
   const [checkedParts, setCheckedParts] = useState<Record<number, Set<number>>>({});
   // Локальная правка цен позиций
   const [priceOverrides, setPriceOverrides] = useState<Record<number, number>>({});
+  // Локальная правка количества позиций
+  const [qtyOverrides, setQtyOverrides] = useState<Record<number, number>>({});
   const [approvingId, setApprovingId] = useState<number | null>(null);
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [rejectComment, setRejectComment] = useState<Record<number, string>>({});
   const [showRejectForm, setShowRejectForm] = useState<Record<number, boolean>>({});
+  // Какой заявке сейчас добавляем позицию
+  const [showAddPart, setShowAddPart] = useState<Record<number, boolean>>({});
 
   // По умолчанию отмечаем одобренные позиции (или все) не затирая уже сделанный выбор
   useEffect(() => {
@@ -35,7 +40,38 @@ export const ReviewTab = () => {
   }, [data]);
 
   const partPrice = (part: ReviewTicket['parts'][number]) => priceOverrides[part.id] ?? part.price;
+  const partQty = (part: ReviewTicket['parts'][number]) => qtyOverrides[part.id] ?? part.requiredQuantity;
   const invalidate = () => queryClient.invalidateQueries({ queryKey: getGetApiManagerReviewQueryKey() });
+
+  const handleQtyInput = (partId: number, qty: number) => {
+    setQtyOverrides(prev => ({ ...prev, [partId]: qty }));
+  };
+
+  const handleQtyCommit = async (partId: number, qty: number) => {
+    const safe = Math.max(1, Math.round(qty) || 1);
+    setQtyOverrides(prev => ({ ...prev, [partId]: safe }));
+    try {
+      await updateTicketPartQuantity(partId, safe);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Ошибка обновления количества');
+    }
+  };
+
+  const handleDeletePart = async (partId: number) => {
+    if (!window.confirm('Удалить позицию из сметы заявки?')) return;
+    try {
+      await deleteTicketPart(partId);
+      invalidate();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Ошибка удаления');
+    }
+  };
+
+  const handleAddPart = async (ticketId: number, nomenclatureId: number, quantity: number) => {
+    await addTicketPart(ticketId, nomenclatureId, quantity);
+    setShowAddPart(p => ({ ...p, [ticketId]: false }));
+    invalidate();
+  };
 
   const togglePart = (ticketId: number, partId: number) => {
     setCheckedParts(prev => {
@@ -105,11 +141,22 @@ export const ReviewTab = () => {
             const checked = checkedParts[ticket.id] ?? new Set();
             const total = Array.from(checked).reduce((s, pid) => {
               const p = ticket.parts.find(x => x.id === pid);
-              return s + (p ? partPrice(p) * p.requiredQuantity : 0);
+              return s + (p ? partPrice(p) * partQty(p) : 0);
             }, 0);
 
+            const allApproved = ticket.parts.length > 0 && ticket.parts.every(p => p.isApproved);
+
             return (
-              <div key={ticket.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div key={ticket.id} className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${allApproved ? 'border-emerald-200' : 'border-slate-200'}`}>
+                {/* Баннер "ожидаем поставки" для уже согласованных заявок */}
+                {allApproved && (
+                  <div className="bg-emerald-50 border-b border-emerald-100 px-5 py-2.5 flex items-center gap-2 text-emerald-700">
+                    <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span className="text-xs font-bold">Список согласован — ожидаем поступления деталей на склад</span>
+                  </div>
+                )}
                 {/* Заголовок заявки */}
                 <div className="p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                   <div>
@@ -145,7 +192,20 @@ export const ReviewTab = () => {
                                 className="w-4 h-4 accent-blue-600 rounded shrink-0" />
                               <span className="flex-1 text-sm font-semibold text-slate-800 truncate">{part.nomenclature.name}</span>
                             </label>
-                            <span className="text-xs text-slate-400 shrink-0">{part.requiredQuantity} {part.nomenclature.unit.shortName}</span>
+                            {/* Количество (редактируемое) */}
+                            <div className="flex items-center gap-1 shrink-0">
+                              <input
+                                type="number"
+                                min={1}
+                                value={partQty(part)}
+                                onClick={e => e.stopPropagation()}
+                                onChange={e => handleQtyInput(part.id, Math.max(1, Number(e.target.value) || 1))}
+                                onBlur={e => handleQtyCommit(part.id, Math.max(1, Number(e.target.value) || 1))}
+                                className="w-16 bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm text-center font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              />
+                              <span className="text-xs text-slate-400 w-8">{part.nomenclature.unit.shortName}</span>
+                            </div>
+                            {/* Цена (редактируемая) */}
                             <div className="flex items-center gap-1 shrink-0">
                               <input
                                 type="number"
@@ -158,13 +218,38 @@ export const ReviewTab = () => {
                               />
                               <span className="text-xs text-slate-400">₽/шт</span>
                             </div>
-                            <span className="text-sm font-bold text-slate-700 ml-2 w-20 text-right shrink-0">{(partPrice(part) * part.requiredQuantity).toLocaleString()} ₽</span>
+                            <span className="text-sm font-bold text-slate-700 ml-2 w-20 text-right shrink-0">{(partPrice(part) * partQty(part)).toLocaleString()} ₽</span>
+                            {/* Удалить позицию */}
+                            <button onClick={() => handleDeletePart(part.id)} title="Удалить позицию"
+                              className="shrink-0 text-slate-300 hover:text-red-500 transition-colors p-1">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
                           </div>
                         ))}
                       </div>
                     </>
                   ) : (
                     <p className="text-sm text-slate-400 mb-5">Позиции не указаны</p>
+                  )}
+
+                  {/* Добавление позиции в смету вручную */}
+                  {showAddPart[ticket.id] ? (
+                    <div className="mb-5">
+                      <NomenclaturePicker
+                        onAdd={(nomId, qty) => handleAddPart(ticket.id, nomId, qty)}
+                        onCancel={() => setShowAddPart(p => ({ ...p, [ticket.id]: false }))}
+                      />
+                    </div>
+                  ) : (
+                    <button onClick={() => setShowAddPart(p => ({ ...p, [ticket.id]: true }))}
+                      className="mb-5 flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-blue-600 transition-colors">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" />
+                      </svg>
+                      Добавить позицию
+                    </button>
                   )}
 
                   {/* Форма комментария при отклонении */}

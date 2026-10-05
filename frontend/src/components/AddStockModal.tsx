@@ -1,10 +1,15 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Modal, ModalHeader } from './Modal';
-import { NomenclatureCreateForm, type NomenclatureFormValues } from './NomenclatureCreateForm';
-import { getNomenclature, createNomenclatureItem } from '../api/tickets';
-import { addInventoryItem } from '../api/manager';
-import { WAREHOUSES } from '../pages/manager/helpers';
+import { NomenclatureCreateForm, type NomenclatureFormValues, type UnitOption } from './NomenclatureCreateForm';
+import { getNomenclature, getUnits, createNomenclatureItem } from '../api/tickets';
+import { addInventoryItem, getWarehouses } from '../api/manager';
 import type { InventoryItem, NomenclatureItem } from '../pages/manager/types';
+
+interface WarehouseOption {
+  id: number;
+  name: string;
+  building: number | null;
+}
 
 interface AddStockModalProps {
   onClose: () => void;
@@ -20,9 +25,9 @@ interface StockRow {
   minQuantity: number;
 }
 
-const newRow = (): StockRow => ({
+const newRow = (warehouseId = 0): StockRow => ({
   id: Date.now().toString(), nomenclatureId: null, nomenclatureName: '',
-  warehouseId: 1, quantity: 1, minQuantity: 0,
+  warehouseId, quantity: 1, minQuantity: 0,
 });
 
 export const AddStockModal = ({ onClose, onAdded }: AddStockModalProps) => {
@@ -36,10 +41,23 @@ export const AddStockModal = ({ onClose, onAdded }: AddStockModalProps) => {
   const [newItem, setNewItem] = useState<Record<string, NomenclatureFormValues>>({});
   const searchTimeouts = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
+  const [units, setUnits] = useState<UnitOption[]>([]);
+  const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  const addRow = () => setRows(r => [...r, newRow()]);
+  useEffect(() => {
+    getUnits().then((data: UnitOption[]) => setUnits(data)).catch(() => {});
+    getWarehouses().then((data: WarehouseOption[]) => {
+      setWarehouses(data);
+      // Проставляем первый реальный склад во все строки, где он ещё не выбран
+      if (data.length > 0) {
+        setRows(rs => rs.map(r => r.warehouseId === 0 ? { ...r, warehouseId: data[0].id } : r));
+      }
+    }).catch(() => {});
+  }, []);
+
+  const addRow = () => setRows(r => [...r, newRow(warehouses[0]?.id ?? 0)]);
   const removeRow = (id: string) => setRows(r => r.filter(x => x.id !== id));
   const updateRow = (id: string, patch: Partial<StockRow>) =>
     setRows(r => r.map(x => x.id === id ? { ...x, ...patch } : x));
@@ -73,7 +91,7 @@ export const AddStockModal = ({ onClose, onAdded }: AddStockModalProps) => {
     setSearchQuery(p => ({ ...p, [rowId]: item.name }));
   };
 
-  const getNewItem = (rowId: string): NomenclatureFormValues => newItem[rowId] ?? { name: '', article: '', unitId: 1, price: 0 };
+  const getNewItem = (rowId: string): NomenclatureFormValues => newItem[rowId] ?? { name: '', article: '', unitId: units[0]?.id ?? 0, price: 0 };
 
   const handleCreateNomenclature = async (rowId: string) => {
     const values = getNewItem(rowId);
@@ -83,7 +101,7 @@ export const AddStockModal = ({ onClose, onAdded }: AddStockModalProps) => {
       const created = await createNomenclatureItem(name, values.unitId, values.article.trim() || undefined, values.price);
       selectNomenclature(rowId, created);
       setShowCreateForm(p => ({ ...p, [rowId]: false }));
-      setNewItem(p => ({ ...p, [rowId]: { name: '', article: '', unitId: 1, price: 0 } }));
+      setNewItem(p => ({ ...p, [rowId]: { name: '', article: '', unitId: units[0]?.id ?? 0, price: 0 } }));
     } catch (err) {
       setErrors(p => ({ ...p, [rowId]: err instanceof Error ? err.message : 'Ошибка' }));
     }
@@ -183,6 +201,7 @@ export const AddStockModal = ({ onClose, onAdded }: AddStockModalProps) => {
                 <div className="mt-2">
                   <NomenclatureCreateForm
                     values={getNewItem(row.id)}
+                    units={units}
                     onChange={values => setNewItem(p => ({ ...p, [row.id]: values }))}
                     onSubmit={() => handleCreateNomenclature(row.id)}
                     onCancel={() => setShowCreateForm(p => ({ ...p, [row.id]: false }))}
@@ -198,7 +217,7 @@ export const AddStockModal = ({ onClose, onAdded }: AddStockModalProps) => {
                 <label className="block text-xs font-semibold text-slate-600 mb-1">Склад</label>
                 <select value={row.warehouseId} onChange={e => updateRow(row.id, { warehouseId: Number(e.target.value) })}
                   className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
-                  {WAREHOUSES.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                  {warehouses.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
                 </select>
               </div>
               <div>

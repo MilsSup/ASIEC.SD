@@ -20,3 +20,15 @@ export const rejectPurchase = (ticketId: number, comment?: string) =>
 
 export const addInventoryItem = (data: { warehouseId: number; nomenclatureId: number; quantity: number; minQuantity: number }) =>
   apiClient.post('/api/manager/warehouse', data).then(r => r.data);
+
+export const getWarehouses = () =>
+  apiClient.get('/api/manager/warehouses').then(r => r.data);
+
+export const updateTicketPartQuantity = (partId: number, requiredQuantity: number) =>
+  apiClient.patch(`/api/manager/parts/${partId}/quantity`, { requiredQuantity }).then(r => r.data);
+
+export const deleteTicketPart = (partId: number) =>
+  apiClient.delete(`/api/manager/parts/${partId}`).then(r => r.data);
+
+export const addTicketPart = (ticketId: number, nomenclatureId: number, requiredQuantity: number) =>
+  apiClient.post(`/api/manager/tickets/${ticketId}/parts`, { nomenclatureId, requiredQuantity }).then(r => r.data);

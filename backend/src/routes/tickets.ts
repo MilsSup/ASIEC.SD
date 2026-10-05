@@ -3,9 +3,9 @@ import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { prisma } from '../lib/client.js';
 import { jwt } from 'hono/jwt';
 import { getJwtSecret } from '../lib/jwt.js';
-import { CreateTicketSchema, UpdateStatusSchema, UpdatePrioritySchema, ConfirmPartsSchema } from '../lib/validation.js';
+import { CreateTicketSchema, UpdateStatusSchema, UpdatePrioritySchema, ConfirmPartsSchema, AddCommentSchema } from '../lib/validation.js';
 import { sortByPriority, positionCategoryMap } from '../lib/reports.js';
-import { TicketSchema, TicketPrioritySchema, TicketHistoryEntrySchema, PartCheckResponseSchema } from '../lib/responseSchemas.js';
+import { TicketSchema, TicketPrioritySchema, TicketHistoryEntrySchema, PartCheckResponseSchema, CategorySchema } from '../lib/responseSchemas.js';
 
 export const ticketsRouter = new OpenAPIHono();
 
@@ -65,6 +65,24 @@ ticketsRouter.openapi(getMyTicketsRoute, async (c) => {
   return c.json(tickets);
 });
 
+// GET /tickets/categories — справочник категорий для формы создания заявки
+const getCategoriesRoute = createRoute({
+  method: 'get',
+  path: '/categories',
+  security: [{ bearerAuth: [] }],
+  responses: {
+    200: {
+      description: 'Список категорий',
+      content: { 'application/json': { schema: z.array(CategorySchema) } },
+    },
+  },
+});
+
+ticketsRouter.openapi(getCategoriesRoute, async (c) => {
+  const categories = await prisma.category.findMany({ orderBy: { name: 'asc' } });
+  return c.json(categories);
+});
+
 ticketsRouter.openapi(createTicketRoute, async (c) => {
   const { categoryName, room, description, building, priority } = c.req.valid('json');
   const payload = c.get('jwtPayload') as { sub: number };
@@ -113,19 +131,20 @@ ticketsRouter.openapi(getExecutorTicketsRoute, async (c) => {
   const positionName = user?.position?.name ?? '';
   const allowedCategories = positionCategoryMap[positionName] ?? [];
 
-  // Если должность не в маппинге, то возвращаем все заявки (для менеджера/админа)
   const tickets = await prisma.ticket.findMany({
     where: {
-      ...(allowedCategories.length > 0
-        ? { category: { name: { in: allowedCategories } } }
-        : {}),
-      // Если за сотрудником закреплён конкретный корпус, то показываем только его заявки
-      ...(user?.building ? { building: user.building } : {}),
       // Отклонённые (отменённые) заявки на доску исполнителя не возвращаем
       NOT: { status: 'CANCELED' },
-      // Заявка либо ещё свободна (не взята в работу), либо уже взята именно этим сотрудником
       OR: [
-        { status: 'NEW' },
+        // Свободные заявки — фильтруются по специализации и закреплённому корпусу.
+        // Пустой список категорий (должность не в маппинге) = видны все категории.
+        {
+          status: 'NEW',
+          ...(allowedCategories.length > 0 ? { category: { name: { in: allowedCategories } } } : {}),
+          ...(user?.building ? { building: user.building } : {}),
+        },
+        // Заявки, уже закреплённые за этим исполнителем, видны всегда —
+        // независимо от категории и корпуса
         { executorId: payload.sub },
       ],
     },
@@ -133,10 +152,9 @@ ticketsRouter.openapi(getExecutorTicketsRoute, async (c) => {
     include: {
       category: true,
       initiator: { select: { fullName: true } },
-      // Ранее запрошенные, но ещё не одобренные руководителем позиции
-      // используются, чтобы предложить исполнителю те же детали при возврате заявки в работу
+      // Возвращаем все позиции: одобренные (уже списаны со склада) и
+      // неодобренные (предлагаем исполнителю при возврате заявки в работу)
       parts: {
-        where: { isApproved: false },
         include: { nomenclature: { include: { unit: true } } },
       },
     },
@@ -367,6 +385,69 @@ ticketsRouter.openapi(getTicketHistoryRoute, async (c) => {
     authorRole: h.changedBy?.role ?? null,
   })));
 });
+
+const addCommentRoute = createRoute({
+  method: 'post',
+  path: '/{id}/comment',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({ id: z.string().openapi({ example: '15' }) }),
+    body: {
+      content: {
+        'application/json': {
+          schema: AddCommentSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    201: { description: 'Комментарий добавлен', content: { 'application/json': { schema: TicketHistoryEntrySchema } } },
+    403: { description: 'Доступ запрещен' },
+    404: { description: 'Заявка не найдена' },
+  },
+});
+
+ticketsRouter.openapi(addCommentRoute, async (c) => {
+  const { id } = c.req.valid('param');
+  const { comment } = c.req.valid('json');
+  const payload = c.get('jwtPayload') as { sub: number; role: string };
+  const ticketId = Number(id);
+
+  const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
+  if (!ticket) {
+    return c.json({ error: 'Заявка не найдена' }, 404 as const);
+  }
+
+  const isParticipant =
+    ticket.initiatorId === payload.sub ||
+    ticket.executorId === payload.sub ||
+    payload.role === 'MANAGER';
+  if (!isParticipant) {
+    return c.json({ error: 'Нет доступа к этой заявке' }, 403 as const);
+  }
+
+  const entry = await prisma.ticketHistory.create({
+    data: {
+      ticketId,
+      changedById: payload.sub,
+      oldStatus: null,
+      newStatus: ticket.status,
+      comment,
+    },
+    include: { changedBy: { select: { fullName: true, role: true } } },
+  });
+
+  return c.json({
+    id: entry.id,
+    oldStatus: entry.oldStatus,
+    newStatus: entry.newStatus,
+    comment: entry.comment,
+    date: entry.createdAt,
+    author: entry.changedBy?.fullName ?? '—',
+    authorRole: entry.changedBy?.role ?? null,
+  }, 201 as const);
+});
+
 
 // POST /tickets/:id/parts/check проверить наличие позиций на складах (свой/другой корпус)
 const checkTicketPartsRoute = createRoute({

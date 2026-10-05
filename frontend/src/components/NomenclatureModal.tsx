@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { getNomenclature, createNomenclatureItem, checkTicketParts } from '../api/tickets';
-import { NomenclatureCreateForm, type NomenclatureFormValues } from './NomenclatureCreateForm';
+import { getNomenclature, getUnits, createNomenclatureItem, updateNomenclatureItem, checkTicketParts } from '../api/tickets';
+import { NomenclatureCreateForm, type NomenclatureFormValues, type UnitOption } from './NomenclatureCreateForm';
 import { Modal, ModalHeader } from './Modal';
 
 export interface NomenclatureItem {
@@ -44,15 +44,22 @@ export const NomenclatureModal = ({ ticketId, onClose, onConfirm, isSubmitting, 
   const [isInitializing, setIsInitializing] = useState(!!initialItems && initialItems.length > 0);
 
   const [items, setItems] = useState<NomenclatureItem[]>([]);
+  const [units, setUnits] = useState<UnitOption[]>([]);
   const [search, setSearch] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [cart, setCart] = useState<Record<number, CartLine>>({});
 
   // Форма создания новой позиции
   const [showCreateForm, setShowCreateForm] = useState(false);
-  const [newItem, setNewItem] = useState<NomenclatureFormValues>({ name: '', article: '', unitId: 1, price: 0 });
+  const [newItem, setNewItem] = useState<NomenclatureFormValues>({ name: '', article: '', unitId: 0, price: 0 });
   const [isCreating, setIsCreating] = useState(false);
   const [createError, setCreateError] = useState('');
+
+  // Редактирование существующей позиции справочника
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editValues, setEditValues] = useState<NomenclatureFormValues>({ name: '', article: '', unitId: 0, price: 0 });
+  const [isEditing, setIsEditing] = useState(false);
+  const [editError, setEditError] = useState('');
 
   // Проверка наличия на складах
   const [checkResult, setCheckResult] = useState<PartCheckItem[]>([]);
@@ -76,6 +83,12 @@ export const NomenclatureModal = ({ ticketId, onClose, onConfirm, isSubmitting, 
 
   useEffect(() => {
     loadItems();
+    getUnits().then((data: UnitOption[]) => {
+      setUnits(data);
+      if (data.length > 0) {
+        setNewItem(prev => ({ ...prev, unitId: data[0].id }));
+      }
+    }).catch(() => {});
   }, [loadItems]);
 
   const handleSearch = (value: string) => {
@@ -109,11 +122,40 @@ export const NomenclatureModal = ({ ticketId, onClose, onConfirm, isSubmitting, 
       setItems(prev => [created, ...prev]);
       setCart(prev => ({ ...prev, [created.id]: { item: created, quantity: 1 } }));
       setShowCreateForm(false);
-      setNewItem({ name: '', article: '', unitId: 1, price: 0 });
+      setNewItem({ name: '', article: '', unitId: units[0]?.id ?? 0, price: 0 });
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : 'Ошибка создания');
     } finally {
       setIsCreating(false);
+    }
+  };
+
+  const startEdit = (item: NomenclatureItem) => {
+    setEditingId(item.id);
+    setEditError('');
+    setEditValues({ name: item.name, article: item.article ?? '', unitId: item.unit.id, price: item.price });
+  };
+
+  const handleSaveEdit = async () => {
+    if (editingId === null) return;
+    if (!editValues.name.trim()) { setEditError('Введите название'); return; }
+    setIsEditing(true);
+    setEditError('');
+    try {
+      const updated = await updateNomenclatureItem(editingId, {
+        name: editValues.name.trim(),
+        unitId: editValues.unitId,
+        article: editValues.article.trim() || null,
+        price: editValues.price,
+      });
+      setItems(prev => prev.map(it => it.id === editingId ? updated : it));
+      // Обновляем позицию в корзине, если она там есть
+      setCart(prev => prev[editingId] ? { ...prev, [editingId]: { ...prev[editingId], item: updated } } : prev);
+      setEditingId(null);
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : 'Ошибка сохранения');
+    } finally {
+      setIsEditing(false);
     }
   };
 
@@ -231,6 +273,22 @@ export const NomenclatureModal = ({ ticketId, onClose, onConfirm, isSubmitting, 
               ) : (
                 items.map(item => {
                   const inCart = cart[item.id];
+                  if (editingId === item.id) {
+                    return (
+                      <NomenclatureCreateForm
+                        key={item.id}
+                        values={editValues}
+                        units={units}
+                        onChange={setEditValues}
+                        onSubmit={handleSaveEdit}
+                        onCancel={() => { setEditingId(null); setEditError(''); }}
+                        isSubmitting={isEditing}
+                        error={editError}
+                        submitLabel="Сохранить"
+                        title="Редактировать позицию"
+                      />
+                    );
+                  }
                   return (
                     <div
                       key={item.id}
@@ -252,18 +310,30 @@ export const NomenclatureModal = ({ ticketId, onClose, onConfirm, isSubmitting, 
                           </div>
                           <span className="text-sm font-semibold text-slate-800 truncate">{item.name}</span>
                         </div>
-                        {inCart ? (
-                          <input
-                            type="number"
-                            min={1}
-                            value={inCart.quantity}
-                            onClick={e => e.stopPropagation()}
-                            onChange={e => setCartQuantity(item.id, Number(e.target.value) || 1)}
-                            className="w-14 shrink-0 bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
-                          />
-                        ) : (
-                          <span className="text-xs text-slate-400 shrink-0">{item.unit.shortName}</span>
-                        )}
+                        <div className="flex items-center gap-2 shrink-0">
+                          {inCart ? (
+                            <input
+                              type="number"
+                              min={1}
+                              value={inCart.quantity}
+                              onClick={e => e.stopPropagation()}
+                              onChange={e => setCartQuantity(item.id, Number(e.target.value) || 1)}
+                              className="w-14 shrink-0 bg-white border border-slate-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
+                            />
+                          ) : (
+                            <span className="text-xs text-slate-400 shrink-0">{item.unit.shortName}</span>
+                          )}
+                          {/* Редактировать позицию справочника */}
+                          <button
+                            onClick={e => { e.stopPropagation(); startEdit(item); }}
+                            title="Редактировать позицию"
+                            className="text-slate-300 hover:text-blue-500 transition-colors p-0.5"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                            </svg>
+                          </button>
+                        </div>
                       </div>
                       {item.article && (
                         <p className="text-xs text-slate-400 mt-0.5 ml-6 truncate">Арт. {item.article}</p>
@@ -279,6 +349,7 @@ export const NomenclatureModal = ({ ticketId, onClose, onConfirm, isSubmitting, 
               <div className="px-4 pb-2 shrink-0 border-t border-slate-100 pt-4">
                 <NomenclatureCreateForm
                   values={newItem}
+                  units={units}
                   onChange={setNewItem}
                   onSubmit={handleCreate}
                   onCancel={() => { setShowCreateForm(false); setCreateError(''); }}

@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { createTicket } from '../../api/tickets';
+import { createTicket, getCategories } from '../../api/tickets';
 import { getGetApiTicketsMyQueryKey } from '../../generated/endpoints/default/default';
 import { PRIORITY_CONFIG, PRIORITY_OPTIONS, type Priority } from '../../components/PriorityBadge';
 import type { ToastType } from './Toasts';
@@ -9,17 +9,35 @@ interface TicketFormProps {
   addToast: (message: string, type: ToastType) => void;
 }
 
+interface CategoryOption {
+  id: number;
+  name: string;
+}
+
 export const TicketForm = ({ addToast }: TicketFormProps) => {
   const queryClient = useQueryClient();
-  const [category, setCategory] = useState('Компьютеры и перефирия');
+  const [categories, setCategories] = useState<CategoryOption[]>([]);
+  const [category, setCategory] = useState('');
   const [building, setBuilding] = useState<1 | 2>(1);
   const [room, setRoom] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<Priority>('NORMAL');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Категории берём из справочника БД, чтобы названия точно совпадали
+  useEffect(() => {
+    getCategories().then((data: CategoryOption[]) => {
+      setCategories(data);
+      if (data.length > 0) setCategory(prev => prev || data[0].name);
+    }).catch(() => {});
+  }, []);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!category) {
+      addToast('Выберите категорию проблемы.', 'error');
+      return;
+    }
     if (!room.trim() || !description.trim()) {
       addToast('Заполните все поля формы.', 'error');
       return;
@@ -27,7 +45,7 @@ export const TicketForm = ({ addToast }: TicketFormProps) => {
     setIsSubmitting(true);
     try {
       await createTicket(category, room, description, building, priority);
-      setCategory('Компьютеры и перефирия');
+      setCategory(categories[0]?.name ?? '');
       setBuilding(1);
       setRoom('');
       setDescription('');
@@ -60,13 +78,14 @@ export const TicketForm = ({ addToast }: TicketFormProps) => {
             <select
               value={category}
               onChange={e => setCategory(e.target.value)}
-              disabled={isSubmitting}
+              disabled={isSubmitting || categories.length === 0}
               className="w-full bg-slate-50 border border-slate-300 text-slate-800 text-sm rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition disabled:opacity-60"
             >
-              <option value="Компьютеры и перефирия">Компьютеры и периферия</option>
-              <option value="Сеть и интернет">Сеть и интернет</option>
-              <option value="Оргтехника">Оргтехника</option>
-              <option value="Помощь с 1С">Помощь с 1С</option>
+              {categories.length === 0 ? (
+                <option value="">Загрузка категорий...</option>
+              ) : (
+                categories.map(cat => <option key={cat.id} value={cat.name}>{cat.name}</option>)
+              )}
             </select>
           </div>
 

@@ -13,15 +13,25 @@ apiClient.interceptors.request.use((config) => {
   return config;
 });
 
-// достаёт читаемое сообщение об ошибке: строку `error` или ZodError
+// достаёт читаемое сообщение об ошибке: строку `error`, ZodError или Hono `message`
 const extractErrorMessage = (data: unknown): string | null => {
-  const err = (data as { error?: unknown })?.error;
-  if (typeof err === 'string') return err;
-  const issues = (err as { issues?: { message: string }[] })?.issues;
+  if (typeof data === 'string') return data;
+  const d = data as Record<string, unknown> | null | undefined;
+  if (!d || typeof d !== 'object') return null;
+
+  // {error: "..."} — наш стандартный формат
+  if (typeof d.error === 'string') return d.error;
+
+  // {error: {issues: [...]}} — ZodError из @hono/zod-openapi
+  const issues = (d.error as { issues?: { message: string }[] } | null | undefined)?.issues;
   if (issues?.length) {
     const messages = issues.map(i => i.message).join(', ');
     if (messages) return messages;
   }
+
+  // {message: "..."} — формат Hono HTTPException и дефолтный обработчик ошибок
+  if (typeof d.message === 'string') return d.message;
+
   return null;
 };
 

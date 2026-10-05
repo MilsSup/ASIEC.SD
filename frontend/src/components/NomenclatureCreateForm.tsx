@@ -1,12 +1,3 @@
-// frontend/src/components/NomenclatureCreateForm.tsx
-
-export const UNITS = [
-  { id: 1, label: 'Штука (шт.)' },
-  { id: 2, label: 'Упаковка (уп.)' },
-  { id: 3, label: 'Килограмм (кг.)' },
-  { id: 4, label: 'Литр (л)' },
-];
-
 export interface NomenclatureFormValues {
   name: string;
   article: string;
@@ -14,19 +5,27 @@ export interface NomenclatureFormValues {
   price: number;
 }
 
+export interface UnitOption {
+  id: number;
+  shortName: string;
+  fullName: string;
+}
+
 interface NomenclatureCreateFormProps {
   values: NomenclatureFormValues;
+  units: UnitOption[];
   onChange: (values: NomenclatureFormValues) => void;
   onSubmit: () => void;
   onCancel: () => void;
   isSubmitting: boolean;
   error?: string;
   submitLabel?: string;
+  title?: string;
 }
 
-export const NomenclatureCreateForm = ({ values, onChange, onSubmit, onCancel, isSubmitting, error, submitLabel = 'Создать и выбрать' }: NomenclatureCreateFormProps) => (
+export const NomenclatureCreateForm = ({ values, units, onChange, onSubmit, onCancel, isSubmitting, error, submitLabel = 'Создать и выбрать', title = 'Новая позиция' }: NomenclatureCreateFormProps) => (
   <div className="bg-white border border-blue-200 rounded-xl p-3 space-y-2">
-    <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Новая позиция</p>
+    <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">{title}</p>
     <input
       type="text"
       placeholder="Название *"
@@ -47,7 +46,9 @@ export const NomenclatureCreateForm = ({ values, onChange, onSubmit, onCancel, i
         onChange={e => onChange({ ...values, unitId: Number(e.target.value) })}
         className="w-1/3 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
       >
-        {UNITS.map(u => <option key={u.id} value={u.id}>{u.label}</option>)}
+        {units.map(u => (
+          <option key={u.id} value={u.id}>{u.fullName} ({u.shortName})</option>
+        ))}
       </select>
     </div>
     <input

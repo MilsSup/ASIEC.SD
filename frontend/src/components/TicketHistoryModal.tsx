@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Modal, ModalHeader } from './Modal';
 import { useTicketHistory } from '../hooks/useTicketHistory';
 
@@ -32,7 +33,25 @@ const statusDot = (status: string) => {
 };
 
 export const TicketHistoryModal = ({ ticketId, onClose }: { ticketId: number; onClose: () => void }) => {
-  const { entries, isLoading, error } = useTicketHistory(ticketId);
+  const { entries, isLoading, error, addComment } = useTicketHistory(ticketId);
+  const [comment, setComment] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const [sendError, setSendError] = useState('');
+
+  const handleSend = async () => {
+    const text = comment.trim();
+    if (!text) return;
+    setIsSending(true);
+    setSendError('');
+    try {
+      await addComment(text);
+      setComment('');
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : 'Не удалось отправить комментарий');
+    } finally {
+      setIsSending(false);
+    }
+  };
 
   return (
     <Modal onClose={onClose}>
@@ -61,7 +80,7 @@ export const TicketHistoryModal = ({ ticketId, onClose }: { ticketId: number; on
               {entries.map(e => (
                 <li key={e.id} className="flex gap-3">
                   <div className="flex flex-col items-center shrink-0">
-                    <span className={`w-2.5 h-2.5 rounded-full mt-1.5 ${statusDot(e.newStatus)}`} />
+                    <span className={`w-2.5 h-2.5 rounded-full mt-1.5 ${e.oldStatus ? statusDot(e.newStatus) : 'bg-slate-300'}`} />
                     <span className="flex-1 w-px bg-slate-100 mt-1" />
                   </div>
                   <div className="flex-1 min-w-0 pb-1">
@@ -75,7 +94,7 @@ export const TicketHistoryModal = ({ ticketId, onClose }: { ticketId: number; on
                       <span className="text-[11px] text-slate-400 ml-auto">{new Date(e.date).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
                     </div>
                     <p className="text-xs text-slate-400 mt-0.5">
-                      {e.oldStatus ? `${STATUS_LABEL[e.oldStatus] ?? e.oldStatus} → ` : ''}{STATUS_LABEL[e.newStatus] ?? e.newStatus}
+                      {e.oldStatus ? `${STATUS_LABEL[e.oldStatus] ?? e.oldStatus} → ${STATUS_LABEL[e.newStatus] ?? e.newStatus}` : 'Комментарий'}
                     </p>
                     {e.comment && (
                       <div className="mt-1.5 bg-slate-50 border border-slate-100 rounded-xl px-3 py-2 text-sm text-slate-700 whitespace-pre-wrap break-words">
@@ -89,7 +108,31 @@ export const TicketHistoryModal = ({ ticketId, onClose }: { ticketId: number; on
           )}
         </div>
 
-        <div className="p-4 border-t border-slate-100 shrink-0">
+        <div className="p-4 border-t border-slate-100 shrink-0 space-y-2">
+          {sendError && <p className="text-xs text-red-500 font-medium">{sendError}</p>}
+          <div className="flex gap-2">
+            <textarea
+              value={comment}
+              onChange={e => setComment(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSend();
+                }
+              }}
+              placeholder="Написать комментарий..."
+              rows={1}
+              disabled={isSending}
+              className="flex-1 resize-none px-3 py-2.5 text-sm border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-200 disabled:opacity-50"
+            />
+            <button
+              onClick={handleSend}
+              disabled={isSending || !comment.trim()}
+              className="px-4 py-2.5 text-sm font-bold text-white bg-[#3b82f6] rounded-xl hover:bg-blue-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Отправить
+            </button>
+          </div>
           <button
             onClick={onClose}
             className="w-full px-4 py-2.5 text-sm font-bold text-slate-600 bg-slate-100 rounded-xl hover:bg-slate-200 transition"

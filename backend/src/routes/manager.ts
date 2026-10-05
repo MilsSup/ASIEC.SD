@@ -10,6 +10,87 @@ import {
   StaffMemberSchema, StaffReportSchema, StaffBuildingSchema,
 } from '../lib/responseSchemas.js';
 
+// Проверяет, не пора ли вернуть в работу заявки, ожидающие поступления детали.
+// Вызывается после любого пополнения склада (приход на существующую позицию или
+// добавление новой). Ищет заявки в статусе WAITING_FOR_PURCHASE с одобренной
+// позицией указанной номенклатуры; если ВСЕ одобренные позиции заявки есть на
+// складе в нужном количестве — списывает их под заявку и возвращает её в работу.
+async function returnTicketsToWorkForNomenclature(nomenclatureId: number, managerId: number) {
+  const affectedTickets = await prisma.ticket.findMany({
+    where: {
+      status: 'WAITING_FOR_PURCHASE',
+      parts: { some: { isApproved: true, nomenclatureId } },
+    },
+    include: { parts: { where: { isApproved: true } } },
+  });
+
+  for (const ticket of affectedTickets) {
+    const neededIds = ticket.parts.map(p => p.nomenclatureId);
+
+    // Суммируем остатки по каждой нужной номенклатуре across всех складов
+    const stocks = await prisma.inventory.groupBy({
+      by: ['nomenclatureId'],
+      where: { nomenclatureId: { in: neededIds } },
+      _sum: { quantity: true },
+    });
+    const stockMap = new Map(stocks.map(s => [s.nomenclatureId, s._sum.quantity ?? 0]));
+
+    // Возвращаем в работу только если ALL одобренных позиций достаточно на складе
+    const allAvailable = ticket.parts.every(
+      p => (stockMap.get(p.nomenclatureId) ?? 0) >= p.requiredQuantity,
+    );
+    if (!allAvailable) continue;
+
+    // Списываем одобренные позиции со склада под эту заявку, чтобы они не ушли
+    // на другую заявку до того, как исполнитель их заберёт. Берём порциями
+    // (один склад может не покрыть всё количество).
+    for (const part of ticket.parts) {
+      let remaining = part.requiredQuantity;
+      const inventories = await prisma.inventory.findMany({
+        where: { nomenclatureId: part.nomenclatureId, quantity: { gt: 0 } },
+        orderBy: { quantity: 'desc' },
+      });
+      for (const inv of inventories) {
+        if (remaining <= 0) break;
+        const toTake = Math.min(remaining, inv.quantity);
+        await prisma.$transaction([
+          prisma.inventory.update({
+            where: { id: inv.id },
+            data: { quantity: { decrement: toTake } },
+          }),
+          prisma.stockWriteOff.create({
+            data: {
+              ticketId: ticket.id,
+              nomenclatureId: part.nomenclatureId,
+              warehouseId: inv.warehouseId,
+              quantity: toTake,
+              price: part.price,
+              writtenOffById: managerId,
+            },
+          }),
+        ]);
+        remaining -= toTake;
+      }
+    }
+
+    await prisma.$transaction([
+      prisma.ticket.update({
+        where: { id: ticket.id },
+        data: { status: 'IN_PROGRESS' },
+      }),
+      prisma.ticketHistory.create({
+        data: {
+          ticketId: ticket.id,
+          changedById: managerId,
+          oldStatus: 'WAITING_FOR_PURCHASE',
+          newStatus: 'IN_PROGRESS',
+          comment: 'Заявка возвращена в работу автоматически. Необходимые детали поступили на склад',
+        },
+      }),
+    ]);
+  }
+}
+
 export const managerRouter = new OpenAPIHono();
 
 // Доступ в разделы руководителя: валидный токен + роль MANAGER
@@ -165,8 +246,11 @@ managerRouter.openapi(approvePartsRoute, async (c) => {
   const { ticketId } = c.req.valid('param');
   const { approvedPartIds } = c.req.valid('json');
   const id = Number(ticketId);
+  const payload = c.get('jwtPayload') as { sub: number };
 
-  // Одобряем выбранные позиции, снимаем галочку с остальных
+  // Одобряем выбранные позиции, снимаем галочку с остальных.
+  // Статус заявки остаётся WAITING_FOR_PURCHASE — вернётся в IN_PROGRESS автоматически,
+  // когда руководитель оприходует необходимые детали на склад.
   await prisma.$transaction([
     prisma.ticketPart.updateMany({
       where: { ticketId: id, id: { in: approvedPartIds } },
@@ -176,12 +260,17 @@ managerRouter.openapi(approvePartsRoute, async (c) => {
       where: { ticketId: id, id: { notIn: approvedPartIds } },
       data: { isApproved: false },
     }),
-    // Возвращаем заявку в IN_PROGRESS
-    prisma.ticket.update({
-      where: { id },
-      data: { status: 'IN_PROGRESS' },
-    }),
   ]);
+
+  // Если все одобренные детали уже есть на складе (закупка не требуется) —
+  // возвращаем заявку в работу сразу, не дожидаясь нового прихода.
+  const approvedParts = await prisma.ticketPart.findMany({
+    where: { ticketId: id, id: { in: approvedPartIds } },
+    select: { nomenclatureId: true },
+  });
+  for (const nomId of new Set(approvedParts.map(p => p.nomenclatureId))) {
+    await returnTicketsToWorkForNomenclature(nomId, payload.sub);
+  }
 
   return c.json({ ok: true });
 });
@@ -231,6 +320,113 @@ managerRouter.openapi(updatePartPriceRoute, async (c) => {
   return c.json({ ...updated, priceDiffers, nomenclaturePrice: part.nomenclature.price }, 200 as const);
 });
 
+// ─── 3.2 ИЗМЕНИТЬ КОЛИЧЕСТВО ПОЗИЦИИ ─────────────────────────────────────────
+// PATCH /manager/parts/:partId/quantity
+const updatePartQuantityRoute = createRoute({
+  method: 'patch', path: '/parts/:partId/quantity',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({ partId: z.string() }),
+    body: {
+      content: { 'application/json': { schema: z.object({ requiredQuantity: z.number().int().min(1) }) } },
+    },
+  },
+  responses: {
+    200: { description: 'Количество обновлено', content: { 'application/json': { schema: EstimatePartSchema } } },
+    404: { description: 'Позиция не найдена', content: { 'application/json': { schema: z.object({ error: z.string() }) } } },
+  },
+});
+
+managerRouter.openapi(updatePartQuantityRoute, async (c) => {
+  const { partId } = c.req.valid('param');
+  const { requiredQuantity } = c.req.valid('json');
+  const id = Number(partId);
+
+  const part = await prisma.ticketPart.findUnique({ where: { id } });
+  if (!part) {
+    return c.json({ error: 'Позиция не найдена' }, 404 as const);
+  }
+
+  const updated = await prisma.ticketPart.update({
+    where: { id },
+    data: { requiredQuantity },
+    include: { nomenclature: { include: { unit: true } }, ticket: { select: { id: true, description: true } } },
+  });
+  return c.json(updated, 200 as const);
+});
+
+// ─── 3.3 УДАЛИТЬ ПОЗИЦИЮ ИЗ СМЕТЫ ────────────────────────────────────────────
+// DELETE /manager/parts/:partId
+const deletePartRoute = createRoute({
+  method: 'delete', path: '/parts/:partId',
+  security: [{ bearerAuth: [] }],
+  request: { params: z.object({ partId: z.string() }) },
+  responses: {
+    200: { description: 'Удалено', content: { 'application/json': { schema: OkSchema } } },
+    404: { description: 'Позиция не найдена', content: { 'application/json': { schema: z.object({ error: z.string() }) } } },
+  },
+});
+
+managerRouter.openapi(deletePartRoute, async (c) => {
+  const { partId } = c.req.valid('param');
+  const id = Number(partId);
+
+  const part = await prisma.ticketPart.findUnique({ where: { id } });
+  if (!part) {
+    return c.json({ error: 'Позиция не найдена' }, 404 as const);
+  }
+
+  await prisma.ticketPart.delete({ where: { id } });
+  return c.json({ ok: true }, 200 as const);
+});
+
+// ─── 3.4 ДОБАВИТЬ ПОЗИЦИЮ В СМЕТУ ЗАЯВКИ ─────────────────────────────────────
+// POST /manager/tickets/:ticketId/parts
+const addPartRoute = createRoute({
+  method: 'post', path: '/tickets/:ticketId/parts',
+  security: [{ bearerAuth: [] }],
+  request: {
+    params: z.object({ ticketId: z.string() }),
+    body: {
+      content: {
+        'application/json': {
+          schema: z.object({ nomenclatureId: z.number(), requiredQuantity: z.number().int().min(1) }),
+        },
+      },
+    },
+  },
+  responses: {
+    201: { description: 'Добавлено', content: { 'application/json': { schema: EstimatePartSchema } } },
+    404: { description: 'Заявка или номенклатура не найдены', content: { 'application/json': { schema: z.object({ error: z.string() }) } } },
+  },
+});
+
+managerRouter.openapi(addPartRoute, async (c) => {
+  const { ticketId } = c.req.valid('param');
+  const { nomenclatureId, requiredQuantity } = c.req.valid('json');
+  const id = Number(ticketId);
+
+  const [ticket, nomenclature] = await Promise.all([
+    prisma.ticket.findUnique({ where: { id } }),
+    prisma.nomenclature.findUnique({ where: { id: nomenclatureId } }),
+  ]);
+  if (!ticket) {
+    return c.json({ error: 'Заявка не найдена' }, 404 as const);
+  }
+  if (!nomenclature) {
+    return c.json({ error: 'Позиция номенклатуры не найдена' }, 404 as const);
+  }
+
+  // Если такая позиция уже есть в заявке — увеличиваем количество, иначе создаём.
+  const part = await prisma.ticketPart.upsert({
+    where: { ticketId_nomenclatureId: { ticketId: id, nomenclatureId } },
+    update: { requiredQuantity: { increment: requiredQuantity } },
+    create: { ticketId: id, nomenclatureId, requiredQuantity, price: nomenclature.price, isApproved: false },
+    include: { nomenclature: { include: { unit: true } }, ticket: { select: { id: true, description: true } } },
+  });
+  return c.json(part, 201 as const);
+});
+
 // ─── 4. СВОДНАЯ СМЕТА (все одобренные позиции) ───────────────────────────────
 // GET /manager/estimate
 
@@ -242,8 +438,10 @@ const getEstimateRoute = createRoute({
 
 managerRouter.openapi(getEstimateRoute, async (c) => {
   const parts = await prisma.ticketPart.findMany({
-    // Позиции завершённых/отменённых заявок уже закуплены (или не нужны), в смету их не включаем
-    where: { isApproved: true, ticket: { status: { notIn: ['COMPLETED', 'CANCELED'] } } },
+    // В смету попадают только одобренные позиции заявок, реально ожидающих закупку.
+    // Как только детали поступают на склад, заявка переходит в IN_PROGRESS и её позиции
+    // (уже закупленные) автоматически уходят из сметы.
+    where: { isApproved: true, ticket: { status: 'WAITING_FOR_PURCHASE' } },
     include: {
       nomenclature: { include: { unit: true } },
       ticket: { select: { id: true, description: true } },
@@ -352,6 +550,23 @@ managerRouter.openapi(getWarehouseRoute, async (c) => {
     orderBy: { nomenclature: { name: 'asc' } },
   });
   return c.json(items);
+});
+
+// GET /manager/warehouses — список складов (для выбора при добавлении позиций)
+const getWarehousesRoute = createRoute({
+  method: 'get', path: '/warehouses',
+  security: [{ bearerAuth: [] }],
+  responses: {
+    200: {
+      description: 'Список складов',
+      content: { 'application/json': { schema: z.array(z.object({ id: z.number(), name: z.string(), building: z.number().nullable() })) } },
+    },
+  },
+});
+
+managerRouter.openapi(getWarehousesRoute, async (c) => {
+  const warehouses = await prisma.warehouse.findMany({ orderBy: { id: 'asc' } });
+  return c.json(warehouses);
 });
 
 // ─── 5.1 ОТЧЁТ ПО РАСХОДУ СКЛАДА (списания за период) ────────────────────────
@@ -468,12 +683,16 @@ const receiveGoodsRoute = createRoute({
 managerRouter.openapi(receiveGoodsRoute, async (c) => {
   const { inventoryId } = c.req.valid('param');
   const { quantity } = c.req.valid('json');
+  const payload = c.get('jwtPayload') as { sub: number };
 
   const updated = await prisma.inventory.update({
     where: { id: Number(inventoryId) },
     data: { quantity: { increment: quantity } },
     include: { nomenclature: { include: { unit: true } }, warehouse: true },
   });
+
+  // После прихода товара проверяем, не пора ли вернуть заявки в работу
+  await returnTicketsToWorkForNomenclature(updated.nomenclatureId, payload.sub);
 
   return c.json(updated);
 });
@@ -705,6 +924,7 @@ const addInventoryRoute = createRoute({
 
 managerRouter.openapi(addInventoryRoute, async (c) => {
   const data = c.req.valid('json');
+  const payload = c.get('jwtPayload') as { sub: number };
 
   const [warehouse, nomenclature] = await Promise.all([
     prisma.warehouse.findUnique({ where: { id: data.warehouseId } }),
@@ -724,6 +944,9 @@ managerRouter.openapi(addInventoryRoute, async (c) => {
     create: data,
     include: { nomenclature: { include: { unit: true } }, warehouse: true },
   });
+
+  // Пополнение склада могло закрыть потребность заявки, ожидающей закупку
+  await returnTicketsToWorkForNomenclature(data.nomenclatureId, payload.sub);
 
   return c.json(item, 201 as const);
 });

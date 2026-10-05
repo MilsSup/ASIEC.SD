@@ -1,11 +1,5 @@
 import type { ReactNode } from 'react';
 
-// Склады по корпусам
-export const WAREHOUSES = [
-  { id: 1, name: 'Склад 1-ого корпуса' },
-  { id: 2, name: 'Склад 2-ого корпуса' },
-];
-
 // Статус позиции на складе. Дефицит только если задан мин. остаток >0, пусто без минимума - нейтрально
 export type StockStatus = 'deficit' | 'empty' | 'ok';
 export const getStockStatus = (quantity: number, minQuantity: number): StockStatus => {

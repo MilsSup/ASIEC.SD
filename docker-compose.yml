@@ -16,6 +16,23 @@ services:
     command: ["api"]
     restart: unless-stopped
 
+  studio:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: file:/app/data/dev.db
+    volumes:
+      - db_data:/app/data
+    command: ["npx", "prisma", "studio", "--port", "5555", "--browser", "none"]
+    ports:
+      - "5555:5555"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
   bot:
     build:
       context: .

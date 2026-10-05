@@ -10,7 +10,9 @@
     "docker:restart": "docker compose down && docker compose up -d --build",
     "docker:logs": "docker compose logs -f",
     "docker:ps": "docker compose ps",
-    "docker:reset": "docker compose down -v"
+    "docker:reset": "docker compose down -v",
+    "docker:seed": "docker compose exec backend npx tsx prisma/seed.ts",
+    "docker:coverage": "docker compose exec backend npm run test:coverage"
   },
   "keywords": [],
   "author": "",

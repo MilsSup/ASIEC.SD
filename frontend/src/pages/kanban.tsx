@@ -22,6 +22,8 @@ interface Ticket {
   status: TicketStatus;
   priority: Priority;
   requestedParts: { nomenclatureId: number; quantity: number }[];
+  // true если все позиции уже одобрены и списаны со склада автоматически
+  partsWrittenOff: boolean;
 }
 
 interface ApiTicket {
@@ -33,7 +35,7 @@ interface ApiTicket {
   priority: string;
   category: { name: string };
   initiator: { fullName: string } | null;
-  parts?: { nomenclatureId: number; requiredQuantity: number }[];
+  parts?: { nomenclatureId: number; requiredQuantity: number; isApproved: boolean }[];
 }
 
 
@@ -87,7 +89,11 @@ const Kanban = () => {
         initiator: t.initiator?.fullName ?? 'Неизвестный',
         status: statusMap[t.status] ?? 'Новая',
         priority: normalizePriority(t.priority),
-        requestedParts: (t.parts ?? []).map(p => ({ nomenclatureId: p.nomenclatureId, quantity: p.requiredQuantity })),
+        // Неодобренные - предлагаем при ручном возврате в работу через модалку
+        requestedParts: (t.parts ?? []).filter(p => !p.isApproved).map(p => ({ nomenclatureId: p.nomenclatureId, quantity: p.requiredQuantity })),
+        // Если все позиции одобрены - они уже списаны автоматически; показываем плашку в карточке
+        // (кнопка «Нужна деталь» при этом остаётся: в ходе ремонта могут понадобиться доп. детали)
+        partsWrittenOff: (t.parts ?? []).length > 0 && (t.parts ?? []).every(p => p.isApproved),
       }));
       setTickets(formatted);
     } catch (err) {
@@ -317,14 +323,22 @@ const Kanban = () => {
                   </div>
                   <p className="font-bold text-sm sm:text-[15px] mb-1 text-[#0f172a] leading-snug line-clamp-3 break-words">{ticket.description}</p>
                   <p className="text-[10px] sm:text-[11px] font-medium text-slate-400 mb-1">{ticket.initiator}</p>
-                  <p className="text-[10px] font-semibold text-blue-400 mb-3">{ticket.category}</p>
+                  <p className="text-[10px] font-semibold text-blue-400 mb-2">{ticket.category}</p>
+                  {ticket.partsWrittenOff && (
+                    <div className="inline-flex items-center gap-1 bg-emerald-50 border border-emerald-200 text-emerald-700 text-[10px] font-bold px-2 py-1 rounded-md mb-3">
+                      <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
+                      </svg>
+                      Детали списаны со склада
+                    </div>
+                  )}
                   <HistoryButton onClick={() => setHistoryModalTicketId(ticket.id)} />
                   <div className="mt-3 pt-3 border-t border-slate-100 flex flex-col sm:flex-row gap-2">
                     <button disabled={loadingTicketId === ticket.id} onClick={() => setCompleteModalTicketId(ticket.id)}
                       className="w-full bg-[#10b981] text-white text-[10px] sm:text-[11px] font-bold uppercase tracking-wider py-2.5 rounded-xl hover:bg-[#059669] transition disabled:opacity-50 disabled:cursor-not-allowed">
                       {loadingTicketId === ticket.id ? '...' : 'Завершить'}
                     </button>
-                    {/* Кнопка открывает модалку */}
+                    {/* Кнопку оставляем всегда: в процессе ремонта могут понадобиться доп. детали */}
                     <button disabled={loadingTicketId === ticket.id} onClick={() => { setModalInitialItems(undefined); setModalTicketId(ticket.id); }}
                       className="w-full bg-white border border-[#ef4444] text-[#ef4444] text-[10px] sm:text-[11px] font-bold uppercase tracking-wider py-2.5 rounded-xl hover:bg-red-50 transition disabled:opacity-50 disabled:cursor-not-allowed">
                       Нужна деталь

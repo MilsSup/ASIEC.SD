@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { getTicketHistory } from '../api/tickets';
+import { useState, useEffect, useCallback } from 'react';
+import { getTicketHistory, addTicketComment } from '../api/tickets';
 
 export interface TicketHistoryEntry {
   id: number;
@@ -27,5 +27,10 @@ export const useTicketHistory = (ticketId: number) => {
     return () => { cancelled = true; };
   }, [ticketId]);
 
-  return { entries, isLoading, error };
+  const addComment = useCallback(async (comment: string) => {
+    const entry = await addTicketComment(ticketId, comment);
+    setEntries(prev => [...prev, entry]);
+  }, [ticketId]);
+
+  return { entries, isLoading, error, addComment };
 };

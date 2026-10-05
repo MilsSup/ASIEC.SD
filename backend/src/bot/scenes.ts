@@ -1,6 +1,7 @@
 import { Scenes, Markup } from 'telegraf';
 import { prisma } from '../lib/client.js';
 import { getKeyboardByRole } from './keyboards.js';
+import { positionCategoryMap } from '../lib/reports.js';
 import { Role, TicketStatus } from '@prisma/client';
 
 // Подписи срочности такие же как в вебе (PRIORITY_CONFIG)
@@ -149,32 +150,24 @@ export const ticketWizard = new Scenes.WizardScene(
       for (const executor of executors) {
         if (!executor.telegramChatId) continue;
 
-        const posName = executor.position?.name?.toLowerCase() || '';
-        const catName = newTicket.category.name;
-        let shouldNotify = false;
+        // Уведомляем только профильных исполнителей — по тому же правилу, что и
+        // фильтр «Открытые заявки»: специализация из positionCategoryMap + корпус.
+        // Пустой список категорий (должность не в маппинге) = исполнитель видит все.
+        const allowed = positionCategoryMap[executor.position?.name ?? ''] ?? [];
+        const categoryOk = allowed.length === 0 || allowed.includes(newTicket.category.name);
+        const buildingOk = !executor.building || executor.building === newTicket.building;
+        if (!categoryOk || !buildingOk) continue;
 
-        if ((posName.includes('1с') || posName.includes('специалист')) && catName === 'Помощь с 1С') {
-            shouldNotify = true;
-        }
-        else if (posName.includes('техник') && ['Компьютеры и перефирия', 'Оргтехника'].includes(catName)) {
-            shouldNotify = true;
-        }
-        else if (posName.includes('администратор') && catName === 'Сеть и интернет') {
-            shouldNotify = true;
-        }
-
-        if (shouldNotify) {
-          await ctx.telegram.sendMessage(
-            executor.telegramChatId,
-            `🚨 <b>НОВАЯ ЗАЯВКА #${newTicket.id}</b>\n\n` +
-            `📍 Кабинет: ${newTicket.room}\n` +
-            `🛠 Категория: ${newTicket.category.name}\n` +
-            `📝 Описание: ${newTicket.description}\n` +
-            `👤 От: ${user.fullName}\n\n` +
-            `Зайдите в <b>«📋 Открытые заявки»</b>, чтобы взять её в работу.`,
-            { parse_mode: 'HTML' }
-          ).catch(() => {});
-        }
+        await ctx.telegram.sendMessage(
+          executor.telegramChatId,
+          `🚨 <b>НОВАЯ ЗАЯВКА #${newTicket.id}</b>\n\n` +
+          `📍 Кабинет: ${newTicket.room}\n` +
+          `🛠 Категория: ${newTicket.category.name}\n` +
+          `📝 Описание: ${newTicket.description}\n` +
+          `👤 От: ${user.fullName}\n\n` +
+          `Зайдите в <b>«📋 Открытые заявки»</b>, чтобы взять её в работу.`,
+          { parse_mode: 'HTML' }
+        ).catch(() => {});
       }
     }
 

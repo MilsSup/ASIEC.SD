@@ -22,6 +22,11 @@ export const UpdatePrioritySchema = z.object({
   priority: z.enum(['LOW', 'NORMAL', 'HIGH']),
 });
 
+// При попытке отправки пустого комментария
+export const AddCommentSchema = z.object({
+  comment: z.string().min(1, 'Комментарий не может быть пустым'),
+});
+
 // Подтверждение списания/закупки позиций по заявке
 export const ConfirmPartsSchema = z.object({
   items: z.array(z.object({
